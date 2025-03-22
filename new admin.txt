@@ -1,0 +1,645 @@
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
+
+class AdminPage extends StatefulWidget {
+  const AdminPage({super.key});
+
+  @override
+  State<AdminPage> createState() => _AdminPageState();
+}
+
+class _AdminPageState extends State<AdminPage> {
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  int deleteTimeInMinutes = 1; // Default value
+  final TextEditingController _deleteTimeController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    cleanOldBookings(); // Clean old bookings
+    monitorStockLevels(); // Monitor stock levels for alerts
+    _loadDeleteTime(); // Load the current deletion time from Firestore
+  }
+
+  Future<void> _loadDeleteTime() async {
+    final settingsDoc = await _db.collection('settings').doc('config').get();
+    setState(() {
+      deleteTimeInMinutes = settingsDoc.data()?['deleteTimeInMinutes'] ?? 1;
+      _deleteTimeController.text = deleteTimeInMinutes.toString();
+    });
+  }
+
+  Future<void> _updateDeleteTime() async {
+    final newTime = int.tryParse(_deleteTimeController.text);
+    if (newTime != null && newTime > 0) {
+      await _db.collection('settings').doc('config').update({'deleteTimeInMinutes': newTime});
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Deletion time updated to $newTime minutes')),
+      );
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Invalid input. Please enter a valid number.')),
+      );
+    }
+  }
+
+  // Function to clean old bookings (older than 24 hours)
+  Future<void> cleanOldBookings() async {
+    try {
+      final now = DateTime.now();
+      final settingsDoc = await _db.collection('settings').doc('config').get();
+      final deleteTimeInMinutes = settingsDoc.data()?['deleteTimeInMinutes'] ?? 1;
+
+      final snapshot = await _db.collection('bookings').get();
+
+      for (var doc in snapshot.docs) {
+        final data = doc.data();
+        if (data['timestamp'] != null) {
+          final timestamp = (data['timestamp'] as Timestamp).toDate();
+          final difference = now.difference(timestamp);
+          if (difference.inMinutes >= deleteTimeInMinutes) {
+            // Restock items before deleting the booking
+            if (data['selectedItems'] != null) {
+              final selectedItems = Map<String, dynamic>.from(data['selectedItems']);
+              for (var entry in selectedItems.entries) {
+                final itemName = entry.key;
+                final itemQuantity = entry.value;
+
+                // Update the item's quantity in the database
+                final itemSnapshot = await _db
+                    .collection('items')
+                    .where('name', isEqualTo: itemName)
+                    .limit(1)
+                    .get();
+
+                if (itemSnapshot.docs.isNotEmpty) {
+                  final itemDoc = itemSnapshot.docs.first;
+                  final currentQuantity = itemDoc.data()['quantity'] ?? 0;
+                  await _db
+                      .collection('items')
+                      .doc(itemDoc.id)
+                      .update({'quantity': currentQuantity + itemQuantity});
+                }
+              }
+            }
+            // Delete the booking
+            await _db.collection('bookings').doc(doc.id).delete();
+          }
+        }
+      }
+    } catch (e) {
+      print('Error cleaning old bookings: $e');
+    }
+  }
+
+  // Function to monitor stock levels and alert if low
+  void monitorStockLevels() {
+    _db.collection('items').snapshots().listen((snapshot) {
+      for (final doc in snapshot.docs) {
+        final data = doc.data();
+        final itemName = data['name'] ?? 'Unknown Item';
+        final quantity = data['quantity'] ?? 0;
+        final threshold = data['threshold'] ?? 0;
+
+        if (quantity <= threshold) {
+          showStockLowAlert(context, itemName, quantity);
+        }
+      }
+    });
+  }
+
+  // Function to display stock low alert
+  void showStockLowAlert(BuildContext context, String itemName, int quantity) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('ALERT: $itemName stock is low (Remaining: $quantity)'),
+        backgroundColor: Colors.red,
+      ),
+    );
+  }
+
+
+
+// Function to approve pending users
+  Future<void> approveUser(String email) async {
+    try {
+      await _db.collection('users').doc(email).update({'approved': true});
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('User approved successfully!')),
+      );
+    } catch (e) {
+      print('Error approving user: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to approve user.')),
+      );
+    }
+  }
+
+  // Fetch pending users for approval
+  Future<QuerySnapshot> fetchPendingUsers() async {
+    return await _db
+        .collection('users')
+        .where('approved', isEqualTo: false)
+        .get();
+  }
+  // Function to fetch and calculate the total available items
+  Future<void> showTotalAvailableItems() async {
+    try {
+      // Fetch items collection
+      final itemSnapshot = await _db.collection('items').get();
+      final bookingsSnapshot = await _db.collection('bookings').get();
+
+      // Maps to store quantities
+      final Map<String, int> availableQuantities = {};
+      final Map<String, int> bookedQuantities = {};
+
+      // Initialize available quantities
+      for (var doc in itemSnapshot.docs) {
+        final data = doc.data();
+        final itemName = data['name'] ?? 'Unknown Item';
+        final quantity = (data['quantity'] ?? 0) as num;
+        availableQuantities[itemName] = quantity.toInt();
+        bookedQuantities[itemName] = 0; // Start booked quantities at 0
+      }
+
+      // Calculate booked quantities
+      for (var bookingDoc in bookingsSnapshot.docs) {
+        final bookingData = bookingDoc.data();
+        final selectedItems = bookingData['selectedItems'] as Map<String, dynamic>?;
+
+        if (selectedItems != null) {
+          selectedItems.forEach((itemName, bookedQuantity) {
+            if (bookedQuantities.containsKey(itemName)) {
+              bookedQuantities[itemName] =
+              (bookedQuantities[itemName]! + (bookedQuantity as num).toInt());
+            }
+          });
+        }
+      }
+
+      // Prepare dialog content
+      final List<TableRow> rows = [
+        TableRow(
+          decoration: BoxDecoration(color: Colors.grey.shade300), // Header row background color
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Text('Item', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18), textAlign: TextAlign.center),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Text('Available', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18), textAlign: TextAlign.center),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Text('Booked', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18), textAlign: TextAlign.center),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(8.0),
+              child: Text('Total', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18), textAlign: TextAlign.center),
+            ),
+          ],
+        ),
+      ];
+
+      availableQuantities.forEach((itemName, availableQuantity) {
+        final bookedQuantity = bookedQuantities[itemName] ?? 0;
+        final totalQuantity = availableQuantity + bookedQuantity;
+        rows.add(
+          TableRow(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Text(itemName, style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Text('$availableQuantity', style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Text('$bookedQuantity', style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
+              ),
+              Padding(
+                padding: const EdgeInsets.all(8.0),
+                child: Text('$totalQuantity', style: const TextStyle(fontSize: 16), textAlign: TextAlign.center),
+              ),
+            ],
+          ),
+        );
+      });
+
+      // Display dialog
+      showDialog(
+        context: context,
+        builder: (context) {
+          return AlertDialog(
+            title: const Text('Item Details', style: TextStyle(fontSize: 20)),
+            content: SingleChildScrollView(
+              child: Table(
+                defaultVerticalAlignment: TableCellVerticalAlignment.middle, // Vertically center align
+                border: TableBorder.all(width: 1.5, color: Colors.grey), // Border styling
+                columnWidths: const {
+                  0: FlexColumnWidth(4),
+                  1: FlexColumnWidth(3),
+                  2: FlexColumnWidth(3),
+                  3: FlexColumnWidth(3),
+                },
+                children: rows,
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Close', style: TextStyle(fontSize: 16)),
+              ),
+            ],
+          );
+        },
+      );
+    } catch (e) {
+      print('Error fetching item details: $e');
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to fetch item details.')),
+      );
+    }
+  }
+
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Admin Dashboard')),
+      body: ListView(
+        padding: const EdgeInsets.all(16.0),
+        children: [
+          // Booking Details Button
+          _buildButton(
+            context,
+            title: 'Booking Details',
+            icon: Icons.book_online,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const BookingDetailsPage()),
+            ),
+          ),
+          // Update Items Button
+          _buildButton(
+            context,
+            title: 'Update Items',
+            icon: Icons.update,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const UpdateItemsPage()),
+            ),
+          ),
+          // Update Balance Button
+          _buildButton(
+            context,
+            title: 'Update Balance',
+            icon: Icons.account_balance_wallet,
+            onTap: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (context) => const UpdateBalancePage()),
+            ),
+          ),
+          // Update Balance Button
+          _buildButton(
+            context,
+            title: 'Total Quantity available',
+            icon: Icons.inventory,
+            onTap: showTotalAvailableItems,
+          ),
+          // User Approvals Section
+          _buildUserApprovalSection(),
+
+          // Divider for new section
+          const SizedBox(height: 20),
+          const Text(
+            'Automatic Booking Deletion Time (Minutes)',
+            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+          ),
+          TextField(
+            controller: _deleteTimeController,
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              hintText: 'Enter deletion time in minutes',
+            ),
+          ),
+          const SizedBox(height: 10),
+          ElevatedButton(
+            onPressed: _updateDeleteTime,
+            child: const Text('Update Deletion Time'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Widget to create a button for the admin dashboard
+  Widget _buildButton(BuildContext context, {
+    required String title,
+    required IconData icon,
+    required VoidCallback onTap,
+  }) {
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 8.0),
+      child: ListTile(
+        leading: Icon(icon, size: 32, color: Colors.blue),
+        title: Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+        trailing: const Icon(Icons.arrow_forward_ios, color: Colors.grey),
+        onTap: onTap,
+      ),
+    );
+  }
+
+  // User Approval Section
+  Widget _buildUserApprovalSection() {
+    return FutureBuilder<QuerySnapshot>(
+      future: fetchPendingUsers(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+          return const Center(child: Text('No users pending approval.'));
+        }
+
+        final pendingUsers = snapshot.data!.docs;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 20),
+            const Text(
+              'User Approvals',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 10),
+            ...pendingUsers.map((userDoc) {
+              final userData = userDoc.data() as Map<String, dynamic>;
+              final userEmail = userDoc.id;
+              final userName = userData['name'] ?? 'Unknown User';
+
+              return Card(
+                margin: const EdgeInsets.symmetric(vertical: 8.0),
+                child: ListTile(
+                  title: Text(userName),
+                  subtitle: Text('Email: $userEmail'),
+                  trailing: ElevatedButton(
+                    onPressed: () => approveUser(userEmail),
+                    child: const Text('Approve'),
+                  ),
+                ),
+              );
+            }).toList(),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// Booking Details Page
+class BookingDetailsPage extends StatelessWidget {
+  const BookingDetailsPage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Booking Details')),
+      body: FutureBuilder<QuerySnapshot>(
+        future: FirebaseFirestore.instance
+            .collection('bookings')
+            .orderBy('timestamp', descending: true)
+            .get(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const Center(child: Text('No bookings found.'));
+          }
+
+          final bookings = snapshot.data!.docs;
+          return ListView.builder(
+            itemCount: bookings.length,
+            itemBuilder: (context, index) {
+              final booking = bookings[index].data() as Map<String, dynamic>;
+              final timestamp = (booking['timestamp'] as Timestamp).toDate();
+              final formattedTime = DateFormat('yyyy-MM-dd HH:mm').format(timestamp);
+              final userName = booking['userName'] ?? 'Unknown User';
+              final userEmail = booking['userEmail'] ?? 'Unknown Email';
+
+              return Card(
+                margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                child: ListTile(
+                  title: Text('Booking ${index + 1}'),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('User: $userName'),
+                      Text('Email: $userEmail'),
+                      const SizedBox(height: 8),
+                      Text(
+                        booking['selectedItems']
+                            .entries
+                            .map((entry) => '${entry.key}: ${entry.value}')
+                            .join(', '),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        'Total Price: ₹${booking['totalPrice']}',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                      Text('Timestamp: $formattedTime'),
+                    ],
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+// Update Items Page
+class UpdateItemsPage extends StatefulWidget {
+  const UpdateItemsPage({super.key});
+
+  @override
+  State<UpdateItemsPage> createState() => _UpdateItemsPageState();
+}
+
+class _UpdateItemsPageState extends State<UpdateItemsPage> {
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Update Items')),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: _db.collection('items').snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const Center(child: Text('No items found.'));
+          }
+
+          final items = snapshot.data!.docs;
+
+          return ListView.builder(
+            itemCount: items.length,
+            itemBuilder: (context, index) {
+              final item = items[index].data() as Map<String, dynamic>;
+              final itemId = items[index].id;
+              final itemName = item['name'] ?? 'Unknown Item';
+              final quantity = item['quantity'] ?? 0;
+
+              return Card(
+                margin: const EdgeInsets.all(8.0),
+                child: ListTile(
+                  title: Text(itemName),
+                  subtitle: Text('Quantity: $quantity'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.edit),
+                    onPressed: () => _editItemQuantity(itemId, quantity),
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  void _editItemQuantity(String itemId, int currentQuantity) async {
+    final TextEditingController _controller =
+    TextEditingController(text: currentQuantity.toString());
+
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Update Quantity'),
+        content: TextField(
+          controller: _controller,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(labelText: 'Quantity'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final newQuantity = int.tryParse(_controller.text) ?? currentQuantity;
+              await _db.collection('items').doc(itemId).update({'quantity': newQuantity});
+              Navigator.of(context).pop();
+            },
+            child: const Text('Update'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class UpdateBalancePage extends StatelessWidget {
+  const UpdateBalancePage({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final FirebaseFirestore _db = FirebaseFirestore.instance;
+
+    return Scaffold(
+      appBar: AppBar(title: const Text('Update Balance')),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: _db.collection('users').snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const Center(child: Text('No users found.'));
+          }
+
+          final users = snapshot.data!.docs;
+
+          return ListView.builder(
+            itemCount: users.length,
+            itemBuilder: (context, index) {
+              final user = users[index].data() as Map<String, dynamic>;
+              final userEmail = users[index].id;
+              final userName = user['name'] ?? 'Unknown User';
+              final balance = user['balance'] ?? 0;
+
+              return Card(
+                margin: const EdgeInsets.symmetric(vertical: 8.0),
+                child: ListTile(
+                  title: Text(userName),
+                  subtitle: Text('Email: $userEmail\nBalance: ₹$balance'),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.edit),
+                    onPressed: () => _updateUserBalance(context, _db, userEmail, balance),
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  void _updateUserBalance(BuildContext context, FirebaseFirestore db, String userEmail, int currentBalance) {
+    final TextEditingController _controller =
+    TextEditingController(text: currentBalance.toString());
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Update Balance'),
+        content: TextField(
+          controller: _controller,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(labelText: 'New Balance'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final newBalance = int.tryParse(_controller.text) ?? currentBalance;
+              try {
+                await db.collection('users').doc(userEmail).update({'balance': newBalance});
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Balance updated successfully!')),
+                );
+              } catch (e) {
+                print('Error updating balance: $e');
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Failed to update balance.')),
+                );
+              }
+              Navigator.of(context).pop();
+            },
+            child: const Text('Update'),
+          ),
+        ],
+      ),
+    );
+  }
+}
