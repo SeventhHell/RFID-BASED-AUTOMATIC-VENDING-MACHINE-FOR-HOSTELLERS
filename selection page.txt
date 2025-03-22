@@ -1,0 +1,349 @@
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'confirmation_page.dart';
+import '../models/item.dart';
+
+class SelectionPage extends StatefulWidget {
+  final String userName;
+  final String userEmail;
+
+  const SelectionPage({
+    Key? key,
+    required this.userName,
+    required this.userEmail,
+  }) : super(key: key);
+
+  @override
+  State<SelectionPage> createState() => _SelectionPageState();
+}
+
+class _SelectionPageState extends State<SelectionPage> {
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  int userBalance = 0;
+  String? userName;
+
+  @override
+  void initState() {
+    super.initState();
+    fetchUserBalance();
+  }
+
+  Future<void> fetchUserBalance() async {
+    try {
+      final userDoc = await _db.collection('users').doc(widget.userEmail).get();
+      if (userDoc.exists) {
+        setState(() {
+          userName = userDoc.data()?['name'] ?? 'User';
+          userBalance = userDoc.data()?['balance'] ?? 0;
+        });
+      }
+    } catch (e) {
+      print('Error fetching user balance: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Home'),
+      ),
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            userName != null
+                ? Text('Welcome, $userName!')
+                : const CircularProgressIndicator(),
+            const SizedBox(height: 20),
+            Text('Balance: ₹$userBalance'),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => ItemSelectionPage(
+                      userName: widget.userName,
+                      userEmail: widget.userEmail,
+                      userBalance: userBalance,
+                    ),
+                  ),
+                );
+              },
+              child: const Text('Select Items'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => BookingDetailsPage(
+                      userEmail: widget.userEmail,
+                    ),
+                  ),
+                );
+              },
+              child: const Text('View Bookings'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ItemSelectionPage extends StatefulWidget {
+  final String userName;
+  final String userEmail;
+  final int userBalance;
+
+  const ItemSelectionPage({
+    Key? key,
+    required this.userName,
+    required this.userEmail,
+    required this.userBalance,
+  }) : super(key: key);
+
+  @override
+  State<ItemSelectionPage> createState() => _ItemSelectionPageState();
+}
+
+class _ItemSelectionPageState extends State<ItemSelectionPage> {
+  final FirebaseFirestore _db = FirebaseFirestore.instance;
+  List<Item> items = [];
+  final Map<String, int> selectedItems = {};
+  bool isLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    loadItems();
+  }
+
+  Future<void> loadItems() async {
+    try {
+      var snapshot = await _db.collection('items').get();
+      setState(() {
+        items = snapshot.docs
+            .map((doc) => Item.fromJson({...doc.data() as Map<String, dynamic>, 'id': doc.id}))
+            .toList();
+
+        for (var item in items) {
+          selectedItems[item.name] = 0;
+        }
+
+        isLoading = false;
+      });
+    } catch (e) {
+      print('Error fetching items: $e');
+      setState(() {
+        isLoading = false;
+      });
+    }
+  }
+
+  void updateItemCount(String name, int change) {
+    setState(() {
+      final totalSelected = selectedItems.values.reduce((a, b) => a + b);
+      final currentCount = selectedItems[name]!;
+
+      const itemMaxLimit = 3;
+
+      if ((change > 0 && totalSelected < 9 && currentCount < itemMaxLimit) || change < 0) {
+        selectedItems[name] = (currentCount + change).clamp(0, itemMaxLimit);
+      } else if (change > 0 && totalSelected >= 9) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('You can select up to 9 items in total.')),
+        );
+      } else if (change > 0 && currentCount >= itemMaxLimit) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('You can select up to 3 of each item.')),
+        );
+      }
+    });
+  }
+
+  int calculateTotalPrice() {
+    return items.fold(
+      0,
+          (sum, item) => sum + (selectedItems[item.name]! * item.price),
+    );
+  }
+
+  int calculateTotalItems() {
+    return selectedItems.values.reduce((a, b) => a + b);
+  }
+
+  void proceedToConfirmation() {
+    final totalPrice = calculateTotalPrice();
+    if (widget.userBalance < totalPrice) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Insufficient balance to proceed with booking.')),
+      );
+      return;
+    }
+
+    // No item quantity or balance updates here, just proceed to the confirmation page
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => ConfirmationPage(
+          selectedItems: selectedItems,
+          totalPrice: totalPrice,
+          userName: widget.userName,
+          userEmail: widget.userEmail,
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Select Items')),
+      body: isLoading
+          ? const Center(child: CircularProgressIndicator())
+          : Column(
+        children: [
+          Expanded(
+            child: ListView.builder(
+              itemCount: items.length,
+              itemBuilder: (context, index) {
+                var item = items[index];
+                return Card(
+                  margin: const EdgeInsets.symmetric(vertical: 4, horizontal: 8),
+                  child: ListTile(
+                    contentPadding: const EdgeInsets.all(10),
+                    leading: item.logoUrl.isNotEmpty
+                        ? Image.network(
+                      item.logoUrl,
+                      width: 50,
+                      height: 50,
+                      fit: BoxFit.cover,
+                    )
+                        : const Icon(Icons.image, size: 50), // Default icon if no logo
+                    title: Text('${item.name} (₹${item.price})'),
+                    subtitle: Text(
+                      item.quantity > 0
+                          ? 'Available: ${item.quantity}, Selected: ${selectedItems[item.name]}'
+                          : 'Out of stock',
+                    ),
+                    trailing: item.quantity > 0
+                        ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        IconButton(
+                          icon: const Icon(Icons.remove),
+                          onPressed: () => updateItemCount(item.name, -1),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.add),
+                          onPressed: () => updateItemCount(item.name, 1),
+                        ),
+                      ],
+                    )
+                        : null,
+                  ),
+                );
+              },
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text('Total Items: ${calculateTotalItems()}'),
+                Text('Total Price: ₹${calculateTotalPrice()}'),
+                const SizedBox(height: 10),
+                ElevatedButton(
+                  onPressed: calculateTotalItems() > 0 ? proceedToConfirmation : null,
+                  child: const Text('Proceed to Confirm'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class BookingDetailsPage extends StatelessWidget {
+  final String userEmail;
+
+  const BookingDetailsPage({Key? key, required this.userEmail}) : super(key: key);
+
+  Future<void> cancelBooking(String bookingId, Map<String, dynamic> selectedItems) async {
+    try {
+      // Delete the booking document
+      await FirebaseFirestore.instance.collection('bookings').doc(bookingId).delete();
+
+      // Update item quantities in Firestore
+      final itemsCollection = FirebaseFirestore.instance.collection('items');
+      for (var itemName in selectedItems.keys) {
+        final selectedCount = selectedItems[itemName];
+        if (selectedCount != null && selectedCount > 0) {
+          final itemDoc = await itemsCollection.where('name', isEqualTo: itemName).get();
+          if (itemDoc.docs.isNotEmpty) {
+            final itemRef = itemDoc.docs.first.reference;
+            final itemData = itemDoc.docs.first.data();
+            final currentQuantity = itemData['quantity'] ?? 0;
+            await itemRef.update({'quantity': currentQuantity + selectedCount});
+          }
+        }
+      }
+    } catch (e) {
+      print('Error canceling booking: $e');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Your Bookings')),
+      body: StreamBuilder<QuerySnapshot>(
+        stream: FirebaseFirestore.instance
+            .collection('bookings')
+            .where('userEmail', isEqualTo: userEmail)
+            .snapshots(),
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
+            return const Center(child: Text('No bookings found.'));
+          }
+          return ListView.builder(
+            itemCount: snapshot.data!.docs.length,
+            itemBuilder: (context, index) {
+              final booking = snapshot.data!.docs[index];
+              final data = booking.data() as Map<String, dynamic>;
+              final selectedItems = data['selectedItems'] as Map<String, dynamic>;
+
+              return Card(
+                margin: const EdgeInsets.symmetric(vertical: 8, horizontal: 16),
+                child: ListTile(
+                  title: Text('Booking ID: ${booking.id}'),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('Items: ${data['selectedItems']}'),
+                      Text('Total Price: ₹${data['totalPrice']}'),
+                      Text('Timestamp: ${data['timestamp'].toDate()}'),
+                    ],
+                  ),
+                  trailing: IconButton(
+                    icon: const Icon(Icons.cancel),
+                    onPressed: () => cancelBooking(booking.id, selectedItems),
+                  ),
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}

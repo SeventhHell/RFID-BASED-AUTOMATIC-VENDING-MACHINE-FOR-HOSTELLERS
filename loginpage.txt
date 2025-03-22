@@ -1,0 +1,274 @@
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'selection_page.dart';
+import 'admin_page.dart';
+import 'register_page.dart'; // Import the RegisterPage
+
+class LoginPage extends StatelessWidget {
+  const LoginPage({super.key});
+
+  void _navigateToHostellerLogin(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const HostellerLoginPage()),
+    );
+  }
+
+  void _navigateToAdminLogin(BuildContext context) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (context) => const AdminLoginPage()),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Container(
+        decoration: BoxDecoration(
+          image: const DecorationImage(
+            image: AssetImage('C:/Users/sreth/AndroidStudioProjects/HostelForYou/lib/assets/images/venda.jpeg'), // Path to your image
+            fit: BoxFit.cover, // Cover the entire screen
+            opacity: 0.2, // Adjust transparency (optional)
+          ),
+          gradient: LinearGradient(
+            colors: [Colors.lightBlueAccent, Colors.blueGrey.shade300],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+        ),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Text(
+                  'Welcome to HostelMate Vending Machine',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.white  ,
+
+                  ),
+                ),
+                const SizedBox(height: 40),
+                ElevatedButton(
+                  onPressed: () => _navigateToHostellerLogin(context),
+                  child: const Text('Login as Hosteller'),
+                ),
+                const SizedBox(height: 20),
+                ElevatedButton(
+                  onPressed: () => _navigateToAdminLogin(context),
+                  child: const Text('Login as Admin'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class HostellerLoginPage extends StatefulWidget {
+  const HostellerLoginPage({super.key});
+
+  @override
+  State<HostellerLoginPage> createState() => _HostellerLoginPageState();
+}
+class _HostellerLoginPageState extends State<HostellerLoginPage> {
+  final TextEditingController _emailController = TextEditingController();
+  final TextEditingController _passwordController = TextEditingController();
+  String? _errorMessage;
+  bool _isUsernameValid = true;
+
+  Future<void> _loginHosteller() async {
+    final email = _emailController.text.trim();
+    final password = _passwordController.text;
+
+    if (email.isEmpty || password.isEmpty) {
+      _showErrorDialog('Please fill in all fields.');
+      return;
+    }try {
+      final userSnapshot =
+      await FirebaseFirestore.instance.collection('users').doc(email).get();
+
+      if (userSnapshot.exists) {
+        final userData = userSnapshot.data();
+        if (userData != null && userData['password'] == password) {
+          if (userData['approved'] == true) {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => SelectionPage(
+                  userName: userData['name'],
+                  userEmail: email,
+                ),
+              ),
+            );
+          } else {
+            _showErrorDialog('Your registration is pending approval.');
+          }
+        } else {
+          _showErrorDialog('Incorrect password.');
+        }
+      } else {
+        setState(() {
+          _isUsernameValid = false; // Mark username as invalid
+        });
+        _showErrorDialog('No account found with this email.');
+      }
+    } catch (e) {
+      _showErrorDialog('An error occurred. Please try again later.');
+    }
+  }
+
+  void _showErrorDialog(String message) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Error'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+            },
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Login as Hosteller')),
+      body: Container(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Colors.blue.shade700, Colors.white70],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+        ),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                TextField(
+                  controller: _emailController,
+                  decoration: InputDecoration(
+                    labelText: 'Email',
+                    border: OutlineInputBorder(),
+                    errorText: !_isUsernameValid ? 'Invalid username' : null,
+                    enabledBorder: OutlineInputBorder(
+                      borderSide: BorderSide(
+                        color: _isUsernameValid ? Colors.grey : Colors.red,
+                      ),
+                    ),
+                  ),
+                  onChanged: (value) {
+                    // Reset username validity when user types
+                    setState(() {
+                      _isUsernameValid = true;
+                    });
+                  },
+                ),
+                const SizedBox(height: 20),
+                TextField(
+                  controller: _passwordController,
+                  obscureText: true,
+                  decoration: const InputDecoration(
+                    labelText: 'Password',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                ElevatedButton(
+                  onPressed: _loginHosteller,
+                  child: const Text('Login'),
+                ),
+                const SizedBox(height: 20),
+                ElevatedButton(
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (context) => const RegisterPage()),
+                    );
+                  },
+                  child: const Text('Register as Hosteller'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+class AdminLoginPage extends StatefulWidget {
+  const AdminLoginPage({super.key});
+
+  @override
+  State<AdminLoginPage> createState() => _AdminLoginPageState();
+}
+
+class _AdminLoginPageState extends State<AdminLoginPage> {
+  final TextEditingController _passwordController = TextEditingController();
+  String? _errorMessage;
+
+  void _verifyPassword() {
+    const adminPassword = '12345';
+    if (_passwordController.text == adminPassword) {
+      Navigator.push(
+        context,
+        MaterialPageRoute(builder: (context) => const AdminPage()),
+      );
+    } else {
+      setState(() {
+        _errorMessage = 'Invalid password. Please try again.';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Admin Login')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text(
+              'Enter Admin Password',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _passwordController,
+              obscureText: true,
+              decoration: InputDecoration(
+                labelText: 'Password',
+                border: const OutlineInputBorder(),
+                errorText: _errorMessage,
+              ),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: _verifyPassword,
+              child: const Text('Login'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

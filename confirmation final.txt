@@ -1,0 +1,159 @@
+import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+
+class ConfirmationPage extends StatelessWidget {
+  final Map<String, int> selectedItems;
+  final int totalPrice;
+  final String userEmail;
+  final String userName;
+
+  const ConfirmationPage({
+    Key? key,
+    required this.selectedItems,
+    required this.totalPrice,
+    required this.userEmail,
+    required this.userName,
+  }) : super(key: key);
+
+  // Map item names to Firestore document IDs
+  final Map<String, String> itemDocIds = const{
+    'Detergent': 'deter001',
+    'Sanitary Pad': 'pad001',
+    'Bathing Soap': 'soap001',
+    'Toothpaste': 'tooth001',
+  };
+
+  Future<void> _confirmBooking(BuildContext context) async {
+    try {
+      // Check if the user already has a booking
+      QuerySnapshot existingBookings = await FirebaseFirestore.instance
+          .collection('bookings')
+          .where('userEmail', isEqualTo: userEmail)
+          .get();
+
+      if (existingBookings.docs.isNotEmpty) {
+        // User already has a booking
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('You already have an active booking.')),
+        );
+        return; // Return early to prevent new booking
+      }
+      // Create a batch to update quantities atomically
+      WriteBatch batch = FirebaseFirestore.instance.batch();
+
+      // Add booking to the 'bookings' collection
+      DocumentReference bookingRef = FirebaseFirestore.instance.collection('bookings').doc();
+      batch.set(bookingRef, {
+        'selectedItems': selectedItems,
+        'totalPrice': totalPrice,
+        'userEmail': userEmail,
+        'userName': userName,
+        'timestamp': Timestamp.fromDate(DateTime.now()),
+      });
+
+      // Update the quantities in the 'items' collection
+      for (var entry in selectedItems.entries) {
+        String itemName = entry.key;
+        int itemCount = entry.value;
+
+        // Get the Firestore document ID for the item
+        String? itemDocId = itemDocIds[itemName];
+
+        if (itemDocId != null) {
+          // Fetch the item document to check the current quantity
+          DocumentReference itemRef = FirebaseFirestore.instance.collection('items').doc(itemDocId);
+          DocumentSnapshot itemSnapshot = await itemRef.get();
+
+          if (itemSnapshot.exists) {
+            int currentQuantity = itemSnapshot['quantity'] ?? 0;
+
+            if (currentQuantity >= itemCount) {
+              // Decrease quantity by the booked count
+              batch.update(itemRef, {
+                'quantity': FieldValue.increment(-itemCount),
+              });
+            } else {
+              // If not enough stock, show an error message
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Not enough stock for $itemName')),
+              );
+              return; // Return early to prevent the batch commit
+            }
+          } else {
+            // Handle case where the item document does not exist
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Item $itemName does not exist')),
+            );
+            return; // Return early to prevent the batch commit
+          }
+        } else {
+          // If the item name is not found in the map
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Invalid item name: $itemName')),
+          );
+          return;
+        }
+      }
+
+      // Commit the batch operation
+      await batch.commit();
+      // Show a success message
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Booking confirmed successfully!')),
+      );
+
+      // Navigate back to the home or previous page
+      Navigator.pop(context);
+    } catch (e) {
+      // Show an error message
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to confirm booking: $e')),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Confirm Booking')),
+      body: Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Your Booking Details:',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 10),
+            ...selectedItems.entries.map(
+                  (entry) => Padding(
+                padding: const EdgeInsets.symmetric(vertical: 4.0),
+                child: Text(
+                  '${entry.key}: ${entry.value}',
+                  style: const TextStyle(fontSize: 16),
+                ),
+              ),
+            ),
+            const Divider(thickness: 1, height: 20),
+            Text(
+              'Total Price: ₹$totalPrice',
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 20),
+            ElevatedButton(
+              onPressed: () => _confirmBooking(context),
+              style: ElevatedButton.styleFrom(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 16),
+              ),
+              child: const Text(
+                'Confirm Booking',
+                style: TextStyle(fontSize: 16),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
